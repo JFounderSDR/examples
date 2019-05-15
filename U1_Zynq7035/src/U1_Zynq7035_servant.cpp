@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-04-30
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -928,9 +928,9 @@ throw (
 		argc, parameters, ulStacksize, ulPriority,
 		entrypoint, invalidProperties);
 
-    char path[1024];
-    std::string exePath = get_exe_path(path, 1024);
-	ConfigParser configParser(exePath);
+    char openScaPath[64];
+    getConfigFilePathFromSHM(openScaPath, sizeof(openScaPath));
+  	ConfigParser configParser(openScaPath);
 	std::string fsRoot = configParser.getValueById(CONSTANT::FSROOT);
 	std::string fileFullPath = fsRoot + "/" + name;
 

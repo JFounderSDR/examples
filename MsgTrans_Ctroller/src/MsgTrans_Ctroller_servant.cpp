@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-05-05
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -21,9 +21,9 @@
 *//****************************************************************************/
 
 #include "../include/MsgTrans_Ctroller_servant.h"
-#include "../include/FileSystem_impl.h"
-#include "../include/SPDParser.h"
-#include "../include/libcf_utils.h"
+#include "FileSystem_impl.h"
+#include "SPDParser.h"
+#include "utils.h"
 #ifdef __SDS_OS_VXWORKS__
 #include <usrLib.h>
 #endif

@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-05-05
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -29,7 +29,8 @@
 #include "debug.h"
 #include "Resource_impl.h"
 #include "openscaSupport.h"
-#include "libcf_utils.h"
+#include "utils.h"
+#include "Boost_utils.h"
 
 #include "Resource_u.h"
 

@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-05-05
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -21,9 +21,9 @@
 *//****************************************************************************/
 
 #include "../include/MsgTrans_Ctroller_servant.h"
-#include "../include/openscaSupport.h"
-#include "../include/libcf_utils.h"
-#include "../include/ConfigParser.h"
+#include "openscaSupport.h"
+#include "utils.h"
+#include "ConfigParser.h"
 
 #include <pthread.h>
 #include <cctype>
@@ -144,9 +144,9 @@ int main(int argc, char * argv[])
 		}
 	}		///for (unsigned int numArg=0; numArg<argc; numArg++)
 
-	char path[1024];
-    std::string exePath = get_exe_path(path, 1024);
-	ConfigParser configParser(exePath);
+    char openScaPath[64];
+    getConfigFilePathFromSHM(openScaPath, sizeof(openScaPath));
+  	ConfigParser configParser(openScaPath);
 	fsroot = configParser.getValueById(CONSTANT::FSROOT);
 
 	///instantiate orb

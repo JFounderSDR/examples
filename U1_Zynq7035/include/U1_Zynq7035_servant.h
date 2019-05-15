@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-04-30
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -30,7 +30,8 @@
 #include "debug.h"
 #include "openscaSupport.h"
 #include "Resource_impl.h"
-#include "libcf_utils.h"
+#include "utils.h"
+#include "Boost_utils.h"
 
 using namespace std;
 

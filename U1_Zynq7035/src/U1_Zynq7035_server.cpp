@@ -4,7 +4,7 @@
 * @version  1
 * @date     2019-04-30
 * @brief
-* Details
+* @Details
 * @Remark : <Description>
 * @verbatim
 * ==============================================================================
@@ -21,7 +21,7 @@
 *//****************************************************************************/
 
 #include "../include/U1_Zynq7035_servant.h"
-#include "../include/openscaSupport.h"
+#include "openscaSupport.h"
 #include <cctype>
 #include <assert.h>
 

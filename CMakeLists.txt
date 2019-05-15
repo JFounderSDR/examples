@@ -19,14 +19,7 @@ SET(CF_DIR "${PROJECT_SOURCE_DIR}/include/CF")
 SET(EXAMPLES_DIR "${PROJECT_SOURCE_DIR}/examples")
 
 INCLUDE_DIRECTORIES("${EXAMPLES_DIR}/common_utils/include"
-                  "${CF_DIR}/libCF_StdPorts/include"
-                  "${CF_DIR}/libCF_Utils/include"
-                  "${CF_DIR}/File/include"
-                  "${CF_DIR}/XMLParser/include"
-                  "${CF_DIR}/Application/include"
-                  "${CF_DIR}/ApplicationFactory/include"
-                  "${CF_DIR}/FileSystem/include"
-                  "${CF_DIR}/FileManager/include")
+                  "${CF_DIR}")
 
 add_subdirectory(${EXAMPLES_DIR}/common_utils)
 add_subdirectory(${EXAMPLES_DIR}/U1_Zynq7035)
