@@ -496,26 +496,31 @@ throw (
 	DEBUG(6, [MsgTrans_Ctroller_servant::query], "In query.")
 	pthread_mutex_lock(&m_attrMtx);
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	if (0 == configProperties.length()){
-		CF::Properties totalProperties;
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
+	CF::Properties totalProperties;
+	totalProperties.length(0);
 
-		DEBUG(6, [MsgTrans_Ctroller_servant::query], " comps.size(): " << comps.size());
-		for(int i = 0; i < comps.size(); i++) {
+	std::vector <CF::Resource_ptr> comps;
+	comps = control_out_uport->getProvidesPorts();
+	CORBA::Short compLen = comps.size();
+	DEBUG(6, [MsgTrans_Ctroller_servant::query], " compLen: " << compLen);
+
+	if (0 == configProperties.length()){
+		for(CORBA::Short i = 0; i < compLen; i++) {
 			if(CORBA::is_nil(comps[i])) {
 				DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ");
+				pthread_mutex_unlock(&m_attrMtx);
 				break;
 			}
 			CF::Properties properties;
 			comps[i]->query(properties);
 
-			CORBA::UShort len = properties.length();
-			totalProperties.length(1);
-			for(CORBA::UShort i = 0; i < len; ++i) {
-				if(0 == strcmp(properties[i].id, BLOCK_ERROR_RATE)) {
-					totalProperties[0] = properties[i];
-				}
+			CORBA::Short len = properties.length();
+			DEBUG(6, [MsgTrans_Ctroller_servant::query], " len: " << len);
+			CORBA::Short totalLen = totalProperties.length();
+			DEBUG(6, [MsgTrans_Ctroller_servant::query], " totalLen: " << totalLen);
+			totalProperties.length(totalLen + len);
+			for(CORBA::Short i = 0; i < len; ++i) {
+				totalProperties[totalLen + i] = properties[i];
 			}
 		}
 
@@ -529,32 +534,31 @@ throw (
 
 		configProperties.length(0);
 		configProperties = totalProperties;
+	} 
 
-		pthread_mutex_unlock(&m_attrMtx);
-		return;
-	}
+	if(1 == configProperties.length()){
+		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
+			0 == strcmp(configProperties[0].id, START_STATUS) ||
+			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
 
-	if(1 == configProperties.length()
-			&& 0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE)) {
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
+			PropertySet_impl::query(configProperties);
 
-		DEBUG(6, [MsgTrans_Ctroller_servant::query], " comps.size(): " << comps.size());
-		for(int i = 0; i < comps.size(); i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ");
-				break;
-			}
-			if( 0 == strcmp(comps[i]->identifier(),
-					"DCE:36d656f4-023f-45ae-8575-857f49870d57:1")){
-				comps[i]->query(configProperties);
-				pthread_mutex_unlock(&m_attrMtx);
-				return;
+		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
+			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
+			0 == strcmp(configProperties[0].id, TARGET_LD)) {
+
+			for(int i = 0; i < compLen; i++) {
+				if(CORBA::is_nil(comps[i])) {
+					DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ")
+					pthread_mutex_unlock(&m_attrMtx);
+					break;
+				}
+				if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
+					comps[i]->query(configProperties);
+				}
 			}
 		}
-	}
-
-	PropertySet_impl::query(configProperties);
+	}	
 /**************************OPENSCA-USERREGION-END*********************************/	
 	pthread_mutex_unlock(&m_attrMtx);
 }

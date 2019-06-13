@@ -18,8 +18,10 @@ SET(EXECUTABLE_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/libs/examples/")
 SET(CF_DIR "${PROJECT_SOURCE_DIR}/include/CF")
 SET(EXAMPLES_DIR "${PROJECT_SOURCE_DIR}/examples")
 
-INCLUDE_DIRECTORIES("${EXAMPLES_DIR}/common_utils/include"
-                  "${CF_DIR}")
+INCLUDE_DIRECTORIES("${CF_DIR}"
+                  "${PROJECT_SOURCE_DIR}/include/runtime_env"
+                  "${PROJECT_SOURCE_DIR}/include/tiny1xml"
+                  "${EXAMPLES_DIR}/common_utils/include")
 
 add_subdirectory(${EXAMPLES_DIR}/common_utils)
 add_subdirectory(${EXAMPLES_DIR}/U1_Zynq7035)

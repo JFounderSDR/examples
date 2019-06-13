@@ -21,6 +21,7 @@
 *//****************************************************************************/
 
 #include "../include/U1_Zynq7035_servant.h"
+#include "../include/debug.h"
 
 U1_Zynq7035_servant::U1_Zynq7035_servant()
 {

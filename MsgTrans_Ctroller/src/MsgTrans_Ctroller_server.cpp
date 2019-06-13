@@ -21,6 +21,7 @@
 *//****************************************************************************/
 
 #include "../include/MsgTrans_Ctroller_servant.h"
+#include "debug.h"
 #include "openscaSupport.h"
 #include "utils.h"
 #include "ConfigParser.h"

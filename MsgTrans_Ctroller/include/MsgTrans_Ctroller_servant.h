@@ -37,6 +37,12 @@
 using namespace std;
 
 #define BLOCK_ERROR_RATE 	("DCE:8b91015a-b0cd-47eb-b475-c44c70bb56a4:1")
+#define LOCAL_LD		 	("DCE:1b26d09b-472d-4515-b872-4063e9d39062:1")
+#define TARGET_LD		 	("DCE:59d888d5-15e6-413b-aa5c-bd344f040998:1")
+#define CONNECTION		 	("DCE:6cb56ba8-0bb9-455e-b34f-cba88b481bff:1")
+#define START_STATUS	 	("DCE:085d86cb-1d1c-45fd-94ed-afa8c0e98414:1")
+#define BUSINESS_TYPE		("DCE:04a9d833-be0c-4fe6-a5c6-a67e1ca7dcfa:1")
+#define CRCCOMP_ID			("DCE:9daf8086-91dc-4406-9d89-3d48565c5c1a:1")
 
 class MsgTrans_Ctroller_servant: 
 public virtual POA_CF::Resource,
