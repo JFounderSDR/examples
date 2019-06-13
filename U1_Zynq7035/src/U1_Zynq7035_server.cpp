@@ -21,7 +21,7 @@
 *//****************************************************************************/
 
 #include "../include/U1_Zynq7035_servant.h"
-#include "../include/debug.h"
+#include "debug.h"
 #include "openscaSupport.h"
 #include <cctype>
 #include <assert.h>
