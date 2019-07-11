@@ -204,7 +204,7 @@ public:
 	 */
 	virtual void 
 	configure( 
-		const CF::Properties & )
+		const CF::Properties & configProperties)
 	throw (
 		CORBA::SystemException,
 		CF::PropertySet::InvalidConfiguration,
@@ -231,7 +231,7 @@ public:
 	 */
 	virtual void 
 	query( 
-		CF::Properties & ) 
+		CF::Properties & configProperties) 
 	throw (
 		CORBA::SystemException, 
 		CF::UnknownProperties);

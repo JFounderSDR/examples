@@ -19,8 +19,6 @@ SET(CF_DIR "${PROJECT_SOURCE_DIR}/include/CF")
 SET(EXAMPLES_DIR "${PROJECT_SOURCE_DIR}/examples")
 
 INCLUDE_DIRECTORIES("${CF_DIR}"
-                  "${PROJECT_SOURCE_DIR}/include/runtime_env"
-                  "${PROJECT_SOURCE_DIR}/include/tiny1xml"
                   "${EXAMPLES_DIR}/common_utils/include")
 
 add_subdirectory(${EXAMPLES_DIR}/common_utils)
