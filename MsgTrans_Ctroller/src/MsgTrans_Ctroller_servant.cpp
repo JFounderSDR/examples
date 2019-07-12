@@ -170,8 +170,8 @@ throw (
 	
 	std::string portFullName = "OpenSCA_Domain/" + m_appName + "/" + portName;
 	DEBUG(5, [MsgTrans_Ctroller_servant::getPort], " portName:" << portName)
-	if ((0 == strcmp(portName, "CRCComp/data_in")) ||
-		(0 == strcmp(portName, "CRCComp/data_out"))) {
+	if ((0 == strcmp(portName, CRCCOMP_UPORT)) ||
+		(0 == strcmp(portName, CRCCOMP_PPORT))) {
 		std::vector <CF::Resource_ptr> comps;
 		comps = control_out_uport->getProvidesPorts();
 		_port = comps[0]->getPort(portName);
@@ -487,7 +487,7 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  *            component.
  */
 void 
-MsgTrans_Ctroller_servant::query (
+MsgTrans_Ctroller_servant::query(
 	CF::Properties & configProperties)
 throw (
 	CORBA::SystemException, 
@@ -635,16 +635,16 @@ throw (
 	
 	try {
 		PropertySet_impl::configure(props);
-	} catch (CF::PropertySet::PartialConfiguration) {
+	} catch (CF::PropertySet::PartialConfiguration & e) {
 		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
 			"partial configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
-		throw CF::PropertySet::PartialConfiguration();
-	} catch (CF::PropertySet::InvalidConfiguration) {
+		throw e;
+	} catch (CF::PropertySet::InvalidConfiguration & e) {
 		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
 			"invalid configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
-		throw CF::PropertySet::InvalidConfiguration();
+		throw e;
 	} catch (...) {
 		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
 			"occur unkown exception when config." )

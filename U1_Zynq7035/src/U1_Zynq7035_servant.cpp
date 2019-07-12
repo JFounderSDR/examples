@@ -419,16 +419,16 @@ throw (
 
 	try {
 		PropertySet_impl::configure(configProperties);
-	} catch (CF::PropertySet::PartialConfiguration) {
+	} catch (CF::PropertySet::PartialConfiguration & e) {
 		DEBUG(0, [U1_Zynq7035_servant::configure],
 			"partial configuration exception.")
 		pthread_mutex_unlock (&m_attrMtx);
-		throw CF::PropertySet::PartialConfiguration();
-	} catch (CF::PropertySet::InvalidConfiguration) {
+		throw e;
+	} catch (CF::PropertySet::InvalidConfiguration & e) {
 		DEBUG(0, [U1_Zynq7035_servant::configure],
 			"invalid configuration exception.")
 		pthread_mutex_unlock (&m_attrMtx);
-		throw CF::PropertySet::InvalidConfiguration();
+		throw e;
 	} catch (...) {
 		DEBUG(0, [U1_Zynq7035_servant::configure],
 			"occur unkown exception when config.")

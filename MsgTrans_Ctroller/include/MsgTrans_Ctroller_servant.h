@@ -36,6 +36,8 @@
 
 using namespace std;
 
+#define CRCCOMP_UPORT		("CRCComp/data_out")
+#define CRCCOMP_PPORT		("CRCComp/data_in")
 #define BLOCK_ERROR_RATE 	("DCE:8b91015a-b0cd-47eb-b475-c44c70bb56a4:1")
 #define LOCAL_LD		 	("DCE:1b26d09b-472d-4515-b872-4063e9d39062:1")
 #define TARGET_LD		 	("DCE:59d888d5-15e6-413b-aa5c-bd344f040998:1")
