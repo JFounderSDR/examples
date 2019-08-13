@@ -1,5 +1,5 @@
 /***************************************************************************//**
-* @file     MsgTrans_Ctroller_servant.cpp
+* @file     AudioCodeCComp_servant.cpp
 * @author   open Team
 * @version  1
 * @date     2019-05-05
@@ -20,26 +20,36 @@
 * of an applicable JFounder license agreement.
 *//****************************************************************************/
 
-#include "../include/MsgTrans_Ctroller_servant.h"
+#include "../include/AudioCodeCComp_servant.h"
+#include "../include/libu1alg.h"
+#include "../include/g72x.h"
 #include "FileSystem_impl.h"
 #include "SPDParser.h"
 #include "utils.h"
 #ifdef __SDS_OS_VXWORKS__
 #include <usrLib.h>
 #endif
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant()
+
+#define DATA_LENGTH		8000	// Maximum length of transmitted data
+#define AUDIOHEAD 		12		// Length of data header receiving data from PC
+
+JTRS::OctetSequence g_recvSeqFromPC(20000);
+JTRS::OctetSequence g_sendSeqFromCRC(20000);
+JTRS::OctetSequence g_recvSeqFromCRC(20000);
+
+AudioCodeCComp_servant::AudioCodeCComp_servant()
 {
 }
 
 /**
- * @brief	MsgTrans_Ctroller_servant Constructor.
+ * @brief	AudioCodeCComp_servant Constructor.
  * 
- * @param[in] _id		component's name.
- * @param[in] _sftwf1 	component's SPD file name.
+ * @param[in] _id		component name.
+ * @param[in] _sftwf1 	component SPD file name.
  * @param[in] _fsroot	file system root path.
  */
 #ifdef __SDS_OS_VXWORKS__
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
+AudioCodeCComp_servant::AudioCodeCComp_servant(
 	const char * _id,
 	const char * _cosNaming,
 	const char * _appName,
@@ -48,7 +58,7 @@ MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
 	pthread_cond_t * _shutdownCond):
 Resource_impl(_id)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "In constructor.")
+	DEBUG(6, [AudioCodeCComp_servant], "In constructor.")
 	
 	
 	m_orbWrap = new openscaSupport::ORB_Wrap::ORB_Wrap();
@@ -71,7 +81,7 @@ Resource_impl(_id)
 
 #elif defined __SDS_OS_LINUX__
 
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
+AudioCodeCComp_servant::AudioCodeCComp_servant(
 	const char * _id,
 	const char * _cosNaming,
 	const char * _appName,
@@ -79,7 +89,7 @@ MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
 	const char * _fsroot):
 Resource_impl(_id)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "In constructor.")
+	DEBUG(6, [AudioCodeCComp_servant], "In constructor.")
 	
 	
 	m_orbWrap = new openscaSupport::ORB_Wrap();
@@ -94,14 +104,17 @@ Resource_impl(_id)
 		setMhalPortLD();
     }
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	control_out_uport = NULL;
+	user_data_out_uport = NULL;
+	data_out_uport = NULL;
+	user_data_in_pport = NULL;
+	data_in_pport = NULL;
 /**************************OPENSCA-USERREGION-END*********************************/
 }
 #endif
 
-MsgTrans_Ctroller_servant::~MsgTrans_Ctroller_servant()
+AudioCodeCComp_servant::~AudioCodeCComp_servant()
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "in destructor")
+	DEBUG(6, [AudioCodeCComp_servant], "in destructor")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 
 
@@ -109,15 +122,110 @@ MsgTrans_Ctroller_servant::~MsgTrans_Ctroller_servant()
 }
 
 /**
- * @brief	This function used to set Mhal port's logical address.
- * 			The logical address is read from component's SPD file.
+ * @brief 	Received data from PC and compressed data, then send them to
+ * 			the CRC component.
+ * 			The data encoding format to be compressed is PCM, Sampling bit
+ * 			depth is 16 bits and mono channel. The data 2:1 is compressed.
+ *
+ * @param[in]	p  an examples of this class
+ */
+void
+AudioCodeCComp_servant::sendDataToCRC()
+{
+	COMPDEBUG(7, [AudioCodeCComp_servant::sendDataToCRC], " enter in ...")
+	
+	user_data_in_pport->getData(g_recvSeqFromPC);
+	static unsigned char audioHeader[AUDIOHEAD];
+	memset(audioHeader, 0, AUDIOHEAD);
+	memcpy(audioHeader, g_recvSeqFromPC.get_buffer(), AUDIOHEAD);
+
+	g_sendSeqFromCRC.length(g_recvSeqFromPC.length() - AUDIOHEAD);
+	for (CORBA::ULong i = 0; i < g_sendSeqFromCRC.length(); ++i) {
+		g_sendSeqFromCRC[i] = g_recvSeqFromPC[AUDIOHEAD + i];
+	}
+	int actualLength = g_sendSeqFromCRC.length();
+	COMPDEBUG(3, [AudioCodeCComp_servant::sendDataToCRC],
+		" g_sendSeqFromCRC.length():" << actualLength)
+
+	JTRS::OctetSequence enCodeSeq;
+	enCodeSeq.length(DATA_LENGTH);
+	int enCodecLen = u1lag_audio_codec_encode(m_encodecHandle, (unsigned char*)enCodeSeq.get_buffer(),
+		(short*)g_sendSeqFromCRC.get_buffer(), actualLength);
+	COMPDEBUG(3, [AudioCodeCComp_servant::sendDataToCRC],
+		" enCodeSeq.length():" << enCodeSeq.length())
+
+	JTRS::OctetSequence sendSeq;
+	sendSeq.length(enCodecLen + AUDIOHEAD);
+	memcpy(sendSeq.get_buffer(), audioHeader, AUDIOHEAD);
+	memcpy(sendSeq.get_buffer() + AUDIOHEAD, enCodeSeq.get_buffer(), 
+		enCodecLen);
+
+	data_out_uport->pushPacket(sendSeq);
+}
+
+/**
+ * @brief 	Received data from CRC component and decompressed data, then send them to
+ * 			the PC.
+ * 			The data encoding format to be decompressed is PCM, Sampling bit
+ * 			depth is 16 bits and mono channel. The data 1:2 is decompressed.
+ *
+ * @param[in]	p  an examples of this class
+ */
+void
+AudioCodeCComp_servant::receiveDataFromCRC()
+{
+	COMPDEBUG(7, [AudioCodeCComp_servant::receiveDataFromCRC],
+			" enter in ...")
+
+	m_recvData.length(DATA_LENGTH);
+	memset(m_recvData.get_buffer(), 0, DATA_LENGTH);
+
+	data_in_pport->getData(g_recvSeqFromCRC);
+
+	unsigned char audioHeader[AUDIOHEAD];
+	memset(audioHeader, 0, AUDIOHEAD);
+	memcpy(audioHeader, g_recvSeqFromCRC.get_buffer(), AUDIOHEAD);
+
+	int actualLength = g_recvSeqFromCRC.length() - AUDIOHEAD;
+	COMPDEBUG(3, [AudioCodeCComp_servant::receiveDataFromCRC],
+		" actualLength:" << actualLength)
+
+	JTRS::OctetSequence deCodeSeq;
+	deCodeSeq.length(DATA_LENGTH);
+
+	char recvData[actualLength];
+	memset(recvData, 0, actualLength);
+	memcpy(recvData, g_recvSeqFromCRC.get_buffer() + AUDIOHEAD, actualLength);
+
+	int decodeLen = u1lag_audio_codec_decode(m_decodecHandle, (unsigned char*)recvData,
+		(short*)deCodeSeq.get_buffer(), actualLength);
+	COMPDEBUG(3, [AudioCodeCComp_servant::receiveDataFromCRC],
+		" deCodeSeq.length():" << deCodeSeq.length())
+
+	JTRS::OctetSequence deCodeSeqWithHeader;
+	deCodeSeqWithHeader.length(AUDIOHEAD + decodeLen);
+	memcpy(deCodeSeqWithHeader.get_buffer(), audioHeader, AUDIOHEAD);
+	memcpy(deCodeSeqWithHeader.get_buffer() + AUDIOHEAD, deCodeSeq.get_buffer(), 
+		decodeLen);
+	COMPDEBUG(3, [AudioCodeCComp_servant::receiveDataFromCRC],
+		" deCodeSeqWithHeader.length():" << deCodeSeqWithHeader.length())
+
+	user_data_out_uport->pushPacket(deCodeSeqWithHeader);
+
+	COMPDEBUG(3, [AudioCodeCComp_servant::receiveDataFromCRC],
+		" send finish." << deCodeSeqWithHeader.length())
+}
+
+/**
+ * @brief	This function used to set Mhal port logical address.
+ * 			The logical address is read from component SPD file.
  */
 void 
-MsgTrans_Ctroller_servant::setMhalPortLD()
+AudioCodeCComp_servant::setMhalPortLD()
 {
 	FileSystem_impl * fs_i = new FileSystem_impl(m_fsroot.c_str());
 	if(!fs_i->exists(m_spdRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::setMhalPortLD],
+		DEBUG(0, [AudioCodeCComp_servant::setMhalPortLD],
 			"SPD file is not existing: " << m_spdRelPath);
 	}
 
@@ -127,7 +235,7 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 	std::string prfRelPath =
 		m_spdRelPath.substr(0, pos + 1) + spdParser.getPRFFile();
 	if(!fs_i->exists(prfRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::setMhalPortLD],
+		DEBUG(0, [AudioCodeCComp_servant::setMhalPortLD],
 			"prf file is not existing: " << prfRelPath);
 	}
 
@@ -147,7 +255,7 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 /**
  * @brief 	The getPort operation provides a mechanism to obtain a specific 
  *         	consumer or producer port, returns the object reference to the 
- *         	named port as stated in the component's SCD.
+ *         	named port as stated in the component SCD.
  *
  * @param[in] 	portName-name references to the port user want to get.
  *
@@ -157,27 +265,30 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
  *              if the port name is invalid.
  */
 CORBA::Object_ptr 
-MsgTrans_Ctroller_servant::getPort(
+AudioCodeCComp_servant::getPort(
 	const char * portName) 
 throw (
 	CORBA::SystemException, 
 	CF::PortSupplier::UnknownPort)
 {
-    DEBUG(6, [MsgTrans_Ctroller_servant::getPort], "In getPort.")
+    DEBUG(6, [AudioCodeCComp_servant::getPort], "In getPort.")
 		
 	CORBA::Object_var _port;
 	
 	std::string portFullName = "OpenSCA_Domain/" + m_appName + "/" + portName;
-	DEBUG(5, [MsgTrans_Ctroller_servant::getPort], " portName:" << portName)
-	if ((0 == strcmp(portName, CRCCOMP_UPORT)) ||
-		(0 == strcmp(portName, CRCCOMP_PPORT))) {
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		_port = comps[0]->getPort(portName);
-		return _port._retn();
-	}
 
-    _port = control_out_uport->getPort( portFullName.c_str());
+    _port = user_data_out_uport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    _port = data_out_uport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    if( 0 == strcmp(portName, "control_in") )
+        return _this();
+    _port = user_data_in_pport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    _port = data_in_pport->getPort( portFullName.c_str() );
     if (!CORBA::is_nil(_port))
        return _port._retn();
 	
@@ -194,30 +305,19 @@ throw (
  *             	exception if an error occurs while starting the resource.
  */
 void 
-MsgTrans_Ctroller_servant::start()
+AudioCodeCComp_servant::start()
 throw (
 	CORBA::SystemException, 
 	CF::Resource::StartError)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::start], "In start.")
+	DEBUG(6, [AudioCodeCComp_servant::start], "In start.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 #ifdef __SDS_OS_LINUX__
 	if(!m_isStarted){
-		m_mhalDev->start();
-
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		DEBUG(7, [MsgTrans_Ctroller_servant::start],
-			" comps.size(): " << comps.size());
-
-		for(int i = 0; i < comps.size(); i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::start],
-					" get component failed. ");
-				break;
-			}
-			comps[i]->start();
-		}
+		user_data_in_pport->connectSlot(
+				boost::bind(&AudioCodeCComp_servant::sendDataToCRC, this));
+		data_in_pport->connectSlot(
+				boost::bind(&AudioCodeCComp_servant::receiveDataFromCRC, this));
 
 		m_isStarted = true;
 	}
@@ -236,41 +336,20 @@ throw (
  *             	if an error occurs while stopping the device.
  */
 void 
-MsgTrans_Ctroller_servant::stop() 
+AudioCodeCComp_servant::stop() 
 throw (
 	CORBA::SystemException, 
 	CF::Resource::StopError) 
 {  
-	DEBUG(6, [MsgTrans_Ctroller_servant::stop], "In stop.")
+	DEBUG(6, [AudioCodeCComp_servant::stop], "In stop.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-#ifdef __SDS_OS_LINUX__
 	if(m_isStarted){
-		try{
-			m_mhalDev->stop();
-		}catch(...){
-			DEBUG(0, [MsgTrans_Ctroller_servant::stop], " stop error.")
-		}
 
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		DEBUG(7, MsgTrans_Ctroller_servant::stop,
-			" comps.size(): " << comps.size());
-
-		for(int i = 0; i < comps.size(); i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::stop],
-					" get component failed. ");
-				break;
-			}
-
-			DEBUG(7, [MsgTrans_Ctroller_servant::stop], " call stop. ");
-			comps[i]->stop();
-		}
+		user_data_in_pport->disconnectSlot();
+		data_in_pport->disconnectSlot();
 
 		m_isStarted = false;
 	}
-#endif
-	DEBUG(7, [MsgTrans_Ctroller_servant::stop], " leave.")
 /**************************OPENSCA-USERREGION-END*********************************/
 }
 
@@ -306,21 +385,38 @@ throw (
  *			  	within the device being released.
  */
 void 
-MsgTrans_Ctroller_servant::releaseObject() 
+AudioCodeCComp_servant::releaseObject() 
 throw (
 	CORBA::SystemException, 
 	CF::LifeCycle::ReleaseError)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::releaseObject], " In releaseObject.")
-	
-	if (m_isStarted) {
-		stop();
-	}
+	DEBUG(6, [AudioCodeCComp_servant::releaseObject], " In releaseObject.")
 
-	if (control_out_uport) {
-		delete control_out_uport;
-		control_out_uport = NULL;
-	}
+#ifdef __SDS_OS_LINUX__
+	stop();
+#endif
+	
+    if(user_data_out_uport) {
+        delete user_data_out_uport;
+        user_data_out_uport = NULL;
+    }
+    if(data_out_uport) {
+        delete data_out_uport;
+        data_out_uport = NULL;
+    }
+    if(user_data_in_pport) {
+        delete user_data_in_pport;
+        user_data_in_pport = NULL;
+    }
+    if(data_in_pport) {
+        delete data_in_pport;
+        data_in_pport = NULL;
+    }
+
+    if(NULL != m_encodecHandle)
+		u1lag_audio_codec_delete(m_encodecHandle);
+	if(NULL != m_decodecHandle)
+		u1lag_audio_codec_delete(m_decodecHandle);
 	
 	//unbind name from domain
 	std::string contextName = 
@@ -333,11 +429,11 @@ throw (
 	try {
 		nc = CosNaming::NamingContext::_narrow(obj);
 	} catch (CosNaming::NamingContext::InvalidName& ex) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [AudioCodeCComp_servant::releaseObject],
 			" occure InvalidName Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [AudioCodeCComp_servant::releaseObject],
 			" occure Unknown Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -345,11 +441,11 @@ throw (
 	try {
 		m_orbWrap->destory_context( nc );
 	} catch(CosNaming::NamingContext::NotEmpty) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [AudioCodeCComp_servant::releaseObject],
 			" NamingContext to be destroy is not empty.")
 		throw CF::LifeCycle::ReleaseError();
 	} catch(...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [AudioCodeCComp_servant::releaseObject],
 			" Unknown  Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -358,7 +454,7 @@ throw (
 	try {
 		m_orbWrap->unbind_string(contextName.c_str());
 	} catch(...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [AudioCodeCComp_servant::releaseObject],
 			" unbing_string with Unknown  Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -383,66 +479,39 @@ throw (
  *             	exception when an initialization error occurs.
  */
 void 
-MsgTrans_Ctroller_servant::initialize()
+AudioCodeCComp_servant::initialize()
 throw (
 	CF::LifeCycle::InitializeError, 
 	CORBA::SystemException)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::initialize], " In initialize.")
+	DEBUG(6, [AudioCodeCComp_servant::initialize], " In initialize.")
 	
-    control_out_uport = new StandardInterfaces_i::Resource_u(
-    	("OpenSCA_Domain/" + m_appName + "/MsgTrans_Ctroller/control_out").c_str());
+    user_data_out_uport = new StandardInterfaces_i::RealOctet_u(
+    	("OpenSCA_Domain/" + m_appName + "/AudioCodeCComp/user_data_out").c_str());
+    data_out_uport = new StandardInterfaces_i::RealOctet_u(
+    	("OpenSCA_Domain/" + m_appName + "/AudioCodeCComp/data_out").c_str());
+    user_data_in_pport = new StandardInterfaces_i::RealOctet_p(
+    	("OpenSCA_Domain/" + m_appName + "/AudioCodeCComp/user_data_in").c_str());
+    data_in_pport = new StandardInterfaces_i::RealOctet_p(
+    	("OpenSCA_Domain/" + m_appName + "/AudioCodeCComp/data_in").c_str());
 	m_initConfig = false;
 	getConfigPropsFromPRF();
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	/// getting the SPM_Zynq7045_PS device through the naming service
-	/// and then getting the Mhal subdevice.
-	std::string contextName = 
-		"OpenSCA_Domain/Single_Node/Device_Manager/Zynq7035_PS";
-	CORBA::Object_ptr obj = 
-		m_orbWrap->get_object_from_string(contextName.c_str());
-	if (CORBA::is_nil(obj)) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize], " obtain obj fail.")
-		return;
-	}
+	m_encodecHandle = NULL;
+	m_decodecHandle = NULL;
 
-	CF::ExecutableDevice_var dev;
-	try {
-		dev = CF::ExecutableDevice::_narrow(obj);
-	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			"\"CF::ExecutableDevice::_narrow\" failed with Unknown Exception.")
-	}
-
-	try {
-		CF::DeviceSequence_var deviceSeq = dev->compositeDevice()->devices();
-		for (CORBA::ULong i = 0; i < deviceSeq->length(); ++i) {
-			if (0 == strcmp("MHAL_Device", deviceSeq[i]->label())) {
-				m_mhalDev = CF::Device::_duplicate(deviceSeq[i]);
-				break;
-			}
-		}
-	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			" get MHAL device failed.")
-	}
-
-	if (CORBA::is_nil(m_mhalDev)) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			" get child device failed.")
-		return;
-	}
+	m_audioCodecType = 0;
 
 	m_isStarted = false;
 /**************************OPENSCA-USERREGION-END*********************************/	
 }
 
 void 
-MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
+AudioCodeCComp_servant::getConfigPropsFromPRF()
 {
 	FileSystem_impl * fs_i = new FileSystem_impl( m_fsroot.c_str() );
 	if(!fs_i->exists(m_spdRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::getConfigPropsFromPRF], 
+		DEBUG(0, [AudioCodeCComp_servant::getConfigPropsFromPRF], 
 			"SPD file is not existing: " << m_spdRelPath);
 	}
 
@@ -452,7 +521,7 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
 	std::string prfRelPath = m_spdRelPath.substr(0, pos + 1) +
 								spdParser.getPRFFile();
 	if(!fs_i->exists(prfRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::getConfigPropsFromPRF], 
+		DEBUG(0, [AudioCodeCComp_servant::getConfigPropsFromPRF], 
 			"prf file is not existing: " << prfRelPath);
 	}
 
@@ -474,10 +543,10 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  * 			shall return only those id/value pairs specified in the
  * 			configProperties parameter if the parameter is not zero size. Valid 
  * 			properties for the query operation shall be all configure properties 
- * 			(simple properties whose kind element's kindtype attribute is 
+ * 			(simple properties whose kind element kindtype attribute is 
  * 			"configure" whose mode attribute is "readwrite" or "readonly" and any
  * 			allocation properties with an action value of "external" as referenced 
- * 			in the component's SPD.
+ * 			in the component SPD.
  *
  * @param[inout]	props	properties need to be queried.
  *
@@ -486,78 +555,18 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  *            component.
  */
 void 
-MsgTrans_Ctroller_servant::query(
+AudioCodeCComp_servant::query (
 	CF::Properties & configProperties)
 throw (
 	CORBA::SystemException, 
 	CF::UnknownProperties)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::query], "In query.")
+	DEBUG(6, [AudioCodeCComp_servant::query], "In query.")
 	pthread_mutex_lock(&m_attrMtx);
+	PropertySet_impl::query(configProperties);
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	CF::Properties totalProperties;
-	totalProperties.length(0);
 
-	std::vector <CF::Resource_ptr> comps;
-	comps = control_out_uport->getProvidesPorts();
-	CORBA::Short compLen = comps.size();
-	DEBUG(6, [MsgTrans_Ctroller_servant::query], " compLen: " << compLen);
 
-	if (0 == configProperties.length()){
-		for(CORBA::Short i = 0; i < compLen; i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ");
-				pthread_mutex_unlock(&m_attrMtx);
-				break;
-			}
-			CF::Properties properties;
-			comps[i]->query(properties);
-
-			CORBA::Short len = properties.length();
-			DEBUG(6, [MsgTrans_Ctroller_servant::query], " len: " << len);
-			CORBA::Short totalLen = totalProperties.length();
-			DEBUG(6, [MsgTrans_Ctroller_servant::query], " totalLen: " << totalLen);
-			totalProperties.length(totalLen + len);
-			for(CORBA::Short i = 0; i < len; ++i) {
-				totalProperties[totalLen + i] = properties[i];
-			}
-		}
-
-		PropertySet_impl::query(configProperties);
-		CORBA::UShort len = configProperties.length();
-		CORBA::UShort oldLen = totalProperties.length();
-		totalProperties.length(oldLen + len);
-		for(CORBA::UShort i = 0; i < len; ++i) {
-			totalProperties[oldLen + i] = configProperties[i];
-		}
-
-		configProperties.length(0);
-		configProperties = totalProperties;
-	} 
-
-	if(1 == configProperties.length()){
-		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
-			0 == strcmp(configProperties[0].id, START_STATUS) ||
-			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
-
-			PropertySet_impl::query(configProperties);
-
-		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
-			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
-			0 == strcmp(configProperties[0].id, TARGET_LD)) {
-
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
-					comps[i]->query(configProperties);
-				}
-			}
-		}
-	}	
 /**************************OPENSCA-USERREGION-END*********************************/	
 	pthread_mutex_unlock(&m_attrMtx);
 }
@@ -568,7 +577,7 @@ throw (
  *			The configure operation shall assign values to the properties as 
  *			indicated in the input configProperties parameter. Valid properties 
  *			for the configure operation shall at a minimum be the configure 
- *			readwrite and writeonly properties referenced in the component's SPD.
+ *			readwrite and writeonly properties referenced in the component SPD.
  *
  * @param[in]	configProperties properties need to be configured.
  *
@@ -580,48 +589,89 @@ throw (
  *				properties were successfully set.
  */
 void 
-MsgTrans_Ctroller_servant::configure(
+AudioCodeCComp_servant::configure(
 	const CF::Properties & configProperties)
 throw (
 	CORBA::SystemException,
 	CF::PropertySet::InvalidConfiguration,
 	CF::PropertySet::PartialConfiguration)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::configure], "In configure.")
+	DEBUG(7, [AudioCodeCComp_servant::configure], "In configure.")
 
 	pthread_mutex_lock(&m_attrMtx);
-	
 	CF::Properties props = configProperties;
-
 	if(!m_initConfig) {
-		CORBA::UShort oldLen = configProperties.length();
+		CORBA::Short oldLen = configProperties.length();
 		props.length(oldLen + m_prfConfigProps.length());
 		for(CORBA::UShort i = 0; i < m_prfConfigProps.length(); ++i) {
 			props[oldLen + i] = m_prfConfigProps[i];
 		}
 		m_initConfig = true;
 	}
+
+	int propLen = props.length();
+	COMPDEBUG(3, [AudioCodeCComp_servant::configure],
+		" propLen:" << propLen)
+	if(1 == propLen){
+		if(0 == strcmp(props[0].id, AUDIO_COMPRESSION_RATIO)){
+			CORBA::UShort audioCodecType;
+			props[0].value >>= audioCodecType;
+			COMPDEBUG(3, [AudioCodeCComp_servant::configure],
+				" audioCodecType:" << audioCodecType)
+
+			if(audioCodecType != 1 && audioCodecType != 2){
+				COMPDEBUG(0, [AudioCodeCComp_servant::configure],
+					" audioCodecType error.")
+				pthread_mutex_unlock(&m_attrMtx);
+				char *errText = "参数超出范围1或2，请重新设置！";
+				throw CF::PropertySet::InvalidConfiguration(
+					errText, props);
+			}	
+		}
+	}
 	
 	try {
 		PropertySet_impl::configure(props);
 	} catch (CF::PropertySet::PartialConfiguration & e) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [AudioCodeCComp_servant::configure], 
 			"partial configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
 		throw e;
 	} catch (CF::PropertySet::InvalidConfiguration & e) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [AudioCodeCComp_servant::configure], 
 			"invalid configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
 		throw e;
 	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [AudioCodeCComp_servant::configure], 
 			"occur unkown exception when config." )
 		pthread_mutex_unlock(&m_attrMtx);
 		throw CF::PropertySet::InvalidConfiguration();
 	}
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
+	
+	for(CORBA::UShort i=0; i<propLen; ++i){
+		if(0 == strcmp(props[i].id, AUDIO_COMPRESSION_RATIO)){
+			CORBA::UShort audioCodecType;
+			props[i].value >>= audioCodecType;
+			m_audioCodecType = audioCodecType;
+			COMPDEBUG(3, [AudioCodeCComp_servant::configure],
+				" m_audioCodecType:" << m_audioCodecType)
+		}
+	}
 
+	if(NULL != m_encodecHandle){
+		u1lag_audio_codec_delete(m_encodecHandle);
+	}
+
+	if(NULL != m_decodecHandle){
+		u1lag_audio_codec_delete(m_decodecHandle);
+	}
+
+	m_encodecHandle = u1lag_audio_codec_create( \
+		(u1alg_audio_codec_type_t)m_audioCodecType);
+	m_decodecHandle = u1lag_audio_codec_create( \
+		(u1alg_audio_codec_type_t)m_audioCodecType);
 
 /**************************OPENSCA-USERREGION-END*********************************/
 	pthread_mutex_unlock(&m_attrMtx);
@@ -644,14 +694,14 @@ throw (
  * 					associated with the input testId given.
  *					The runTest operation shall raise the CF UnknownProperties 
  *					exception when the input parameter testValues contains any 
- *					CF DataTypes that are not known by the component's test
+ *					CF DataTypes that are not known by the component test
  *					implementation or any values that are out of range for the 
  *					requested test. The exception parameter invalidProperties 
  *					shall contain the invalid testValues properties id(s) that are
  *					not known by the component or the value(s) are out of range.
  */
 void 
-MsgTrans_Ctroller_servant::runTest(
+AudioCodeCComp_servant::runTest(
 	CORBA::ULong TestID, 
 	CF::Properties & testValues)
 throw (
@@ -659,7 +709,7 @@ throw (
 	CF::TestableObject::UnknownTest,
 	CORBA::SystemException)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::runTest], "In runTest.")
+	DEBUG(6, [AudioCodeCComp_servant::runTest], "In runTest.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 
 

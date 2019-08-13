@@ -1,5 +1,5 @@
 /***************************************************************************//**
-* @file     MsgTrans_Ctroller_servant.cpp
+* @file     RxTxComp_servant.cpp
 * @author   open Team
 * @version  1
 * @date     2019-05-05
@@ -20,26 +20,38 @@
 * of an applicable JFounder license agreement.
 *//****************************************************************************/
 
-#include "../include/MsgTrans_Ctroller_servant.h"
+#include "../include/RxTxComp_servant.h"
 #include "FileSystem_impl.h"
 #include "SPDParser.h"
 #include "utils.h"
 #ifdef __SDS_OS_VXWORKS__
 #include <usrLib.h>
 #endif
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant()
+
+#define SYNCHRO_HEAD	("@MAC")	// CRC header identification
+#define TRANSFER_DATA_MAX_LEN		25000	// Maximum length of transmitted data
+
+JTRS::OctetSequence g_recvSeqFromPC(20000);
+JTRS::OctetSequence g_recvSeqFromMHAL(20000);
+
+struct ErrorRate{
+	unsigned long long checkSum;
+	unsigned long long checkErrorNum;
+} errorRate;
+
+RxTxComp_servant::RxTxComp_servant()
 {
 }
 
 /**
- * @brief	MsgTrans_Ctroller_servant Constructor.
+ * @brief	RxTxComp_servant Constructor.
  * 
- * @param[in] _id		component's name.
- * @param[in] _sftwf1 	component's SPD file name.
+ * @param[in] _id		component name.
+ * @param[in] _sftwf1 	component SPD file name.
  * @param[in] _fsroot	file system root path.
  */
 #ifdef __SDS_OS_VXWORKS__
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
+RxTxComp_servant::RxTxComp_servant(
 	const char * _id,
 	const char * _cosNaming,
 	const char * _appName,
@@ -48,7 +60,7 @@ MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
 	pthread_cond_t * _shutdownCond):
 Resource_impl(_id)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "In constructor.")
+	DEBUG(6, [RxTxComp_servant], "In constructor.")
 	
 	
 	m_orbWrap = new openscaSupport::ORB_Wrap::ORB_Wrap();
@@ -59,6 +71,8 @@ Resource_impl(_id)
 	m_shutdownCond = _shutdownCond;
 	pthread_mutex_init(&m_attrMtx, NULL);
 
+    m_mhalPortNames.push_back("data_mhal_axi_out");
+    m_mhalPortNames.push_back("data_mhal_axi_in");
 
 	if(m_mhalPortNames.size() > 0) {
 		setMhalPortLD();
@@ -71,7 +85,7 @@ Resource_impl(_id)
 
 #elif defined __SDS_OS_LINUX__
 
-MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
+RxTxComp_servant::RxTxComp_servant(
 	const char * _id,
 	const char * _cosNaming,
 	const char * _appName,
@@ -79,7 +93,7 @@ MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant(
 	const char * _fsroot):
 Resource_impl(_id)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "In constructor.")
+	DEBUG(6, [RxTxComp_servant], "In constructor.")
 	
 	
 	m_orbWrap = new openscaSupport::ORB_Wrap();
@@ -89,19 +103,27 @@ Resource_impl(_id)
 	m_fsroot = _fsroot;
 	pthread_mutex_init(&m_attrMtx, NULL);
 
+    m_mhalPortNames.push_back("data_mhal_axi_out");
+    m_mhalPortNames.push_back("data_mhal_axi_in");
+
+    data_mhal_axi_in_pport_local_LD = 0x0520;
+    data_mhal_axi_out_uport_target_LD = 0x04a0;
 
 	if(m_mhalPortNames.size() > 0) {
 		setMhalPortLD();
     }
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	control_out_uport = NULL;
+	data_out_uport = NULL;
+	data_mhal_axi_out_uport = NULL;
+	data_in_pport = NULL;
+	data_mhal_axi_in_pport = NULL;
 /**************************OPENSCA-USERREGION-END*********************************/
 }
 #endif
 
-MsgTrans_Ctroller_servant::~MsgTrans_Ctroller_servant()
+RxTxComp_servant::~RxTxComp_servant()
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant], "in destructor")
+	DEBUG(6, [RxTxComp_servant], "in destructor")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 
 
@@ -109,15 +131,297 @@ MsgTrans_Ctroller_servant::~MsgTrans_Ctroller_servant()
 }
 
 /**
- * @brief	This function used to set Mhal port's logical address.
- * 			The logical address is read from component's SPD file.
+ * @brief 	Received data from AudioCodec component and adding CRC header to
+ * 			facilitate CRC verification after receiving data, then send them to
+ * 			the MHAL device.
+ *
+ * @param[in]	p  an examples of this class
+ */
+void
+RxTxComp_servant::sendDataToMHAL()
+{
+	COMPDEBUG(7, [RxTxComp_servant::sendDataToMHAL],
+		" enter in ...")
+
+	static unsigned char data[TRANSFER_DATA_MAX_LEN];
+
+	data_in_pport->getData(g_recvSeqFromPC);
+	COMPDEBUG(4, [RxTxComp_servant::sendDataToMHAL],
+		" g_recvSeqFromPC.length():" << g_recvSeqFromPC.length())
+
+	unsigned short validLength = g_recvSeqFromPC.length();
+	unsigned short crcNum = get_crc16(g_recvSeqFromPC.get_buffer(), validLength, 0);
+
+	if (g_recvSeqFromPC.get_buffer() && (0 < validLength) &&
+		(validLength <= TRANSFER_DATA_MAX_LEN)) {
+		memset(data, 0, TRANSFER_DATA_MAX_LEN);
+		memcpy(data, SYNCHRO_HEAD, 4);
+		memcpy(data + 4, &validLength, 2);
+		memcpy(data + 6, &crcNum, 2);
+		memcpy(data + 8, g_recvSeqFromPC.get_buffer(), validLength);
+
+		int packNum = 1 + (validLength + 7) / 8;
+		memcpySequence(m_sendData, data, packNum * 8);
+
+		data_mhal_axi_out_uport->pushPacket(
+			data_mhal_axi_out_uport_target_LD, m_sendData);
+		COMPDEBUG(3, [RxTxComp_servant::sendDataToMHAL],
+			" m_sendData.length():" << m_sendData.length())
+	}
+}
+
+/**
+ * @brief 	Received data from MHAL device and conducting CRC verification,
+ * 			then send them to the AudioCodec component.
+ *
+ * @param[in]	p  an examples of this class
+ */
+void
+RxTxComp_servant::receiveDataFromMHAl()
+{
+	COMPDEBUG(7, [RxTxComp_servant::receiveDataFromMHAL],
+			" enter in ...")
+
+	CORBA::UShort targetLD;
+	COMPDEBUG(3, [RxTxComp_servant::receiveDataFromMHAL],
+			" enter...")
+	data_mhal_axi_in_pport->getData(targetLD, g_recvSeqFromMHAL);
+	COMPDEBUG(3, [RxTxComp_servant::receiveDataFromMHAL],
+			" leave...")
+	if (!checkTargetLD(targetLD)) {
+		COMPDEBUG(0, [RxTxComp_servant::receiveDataFromMHAL],
+			" LD error.")
+		return;
+	}
+
+	int curBufLen = m_recvData.length();
+	int newPackLen = g_recvSeqFromMHAL.length();
+	COMPDEBUG(3, [RxTxComp_servant::receiveDataFromMHAL],
+		" curBufLen:" << curBufLen)
+	COMPDEBUG(3, [RxTxComp_servant::receiveDataFromMHAL],
+		" newPackLen:" << newPackLen)
+
+	m_recvData.length(curBufLen + newPackLen);
+	memcpy(m_recvData.get_buffer() + curBufLen,
+		g_recvSeqFromMHAL.get_buffer(), newPackLen);
+
+	processData();
+}
+
+void
+RxTxComp_servant::processData()
+{
+	unsigned char *recvData = m_recvData.get_buffer();
+
+	if(m_recvData.length() <= 8){
+		COMPDEBUG(1, [RxTxComp_servant::processData],
+			" m_recvData.length():" << m_recvData.length())
+		return;
+	}
+	if ((*(unsigned int*) recvData) == (*(unsigned int*) SYNCHRO_HEAD)) {
+		if (errorRate.checkSum < ULLONG_MAX) {
+			errorRate.checkSum += 1;
+		} else {
+			errorRate.checkErrorNum = 0;
+			errorRate.checkSum = 1;
+		}
+
+		unsigned short len = *(short*) (recvData + strlen(SYNCHRO_HEAD));
+
+		if (len > TRANSFER_DATA_MAX_LEN || 0 >= len) {
+			COMPDEBUG(1, [RxTxComp_servant::processData],
+				" len is more than 8000.")
+			splitValidData(m_recvData, 8);
+			if (adjustData(m_recvData)) {
+				processData();
+			}
+			return;
+		}
+
+		unsigned short recvCrc = *(short*) (recvData + strlen(SYNCHRO_HEAD)
+				+ sizeof(len));
+
+		int dataLength = m_recvData.length() - 8;
+		COMPDEBUG(3, [RxTxComp_servant::processData], " len:" << len)
+		COMPDEBUG(3, [RxTxComp_servant::processData], " dataLength:" << dataLength)
+
+		if (dataLength >= len) {
+			if (checkCRC(recvData + 8, len, recvCrc)) {
+				COMPDEBUG(3, [RxTxComp_servant::processData], " checkCRC success.")
+				JTRS::OctetSequence dataSeq;
+				memcpySequence(dataSeq, recvData + 8, len);
+				data_out_uport->pushPacket(dataSeq);
+				COMPDEBUG(3, [RxTxComp_servant::processData], " send finish.")
+				splitValidData(m_recvData, 8+len);
+				if (adjustData(m_recvData)) {
+					processData();
+				}
+			} else {
+				if (errorRate.checkErrorNum < ULLONG_MAX) {
+					errorRate.checkErrorNum += 1;
+				} else {
+					errorRate.checkErrorNum = 1;
+					errorRate.checkSum = 1;
+				}
+
+				COMPDEBUG(0, [RxTxComp_servant::processData], " checkCRC error.")
+				JTRS::OctetSequence dataSeq;
+				int offset = 0;
+				if (findHeader(m_recvData.get_buffer() + 8, m_recvData.length() - 8, &offset)) {
+					memcpySequence(dataSeq, m_recvData.get_buffer() + 8, offset);
+					data_out_uport->pushPacket(dataSeq);
+
+					splitValidData(m_recvData, offset + 8);
+					processData();
+				} else {
+					memcpySequence(dataSeq, m_recvData.get_buffer() + 8, len);
+					data_out_uport->pushPacket(dataSeq);
+
+					splitValidData(m_recvData, len + 8);
+				}
+			}
+		}
+	} else {
+		COMPDEBUG(1, [RxTxComp_servant::processData], " head error.")
+		if (adjustData(m_recvData)) {
+			processData();
+		}
+	}
+}
+
+void
+RxTxComp_servant::splitValidData(
+		JTRS::OctetSequence &sequence,
+		int offset)
+{
+	if(0 >= offset){
+		return;
+	}
+	int len = sequence.length();
+
+	if (len < offset) {
+		return;
+	} else if (len == offset) {
+		sequence.release();
+		sequence.length(len - offset);
+	} else {
+		memcpySequence(sequence, sequence.get_buffer() + offset, len - offset);
+	}
+}
+
+bool
+RxTxComp_servant::adjustData(
+		JTRS::OctetSequence &sequence)
+{
+	unsigned char *recvData = sequence.get_buffer();
+	int length = sequence.length();
+	int offset = 0;
+	if (findHeader(recvData, length, &offset)) {
+		splitValidData(sequence, offset);
+		COMPDEBUG(3, [RxTxComp_servant::adjustData],
+			" head offset:" << offset)
+		return true;
+	} else {
+		COMPDEBUG(3, [RxTxComp_servant::adjustData],
+			" no head offset:" << offset)
+		splitValidData(sequence, offset);
+	}
+
+	COMPDEBUG(3, [RxTxComp_servant::adjustData],
+			" m_recvData:" << m_recvData.length())
+	return false;
+}
+
+bool
+RxTxComp_servant::findHeader(
+		unsigned char * recvData,
+		int dataLength,
+		int * offset)
+{
+	COMPDEBUG(3, [RxTxComp_servant::findHeader],
+		" dataLength:" << dataLength)
+	assert(offset);
+	if(dataLength < 4){
+		*offset = 0;
+		COMPDEBUG(3, [RxTxComp_servant::findHeader],
+			" offset:" << *offset)
+		return false;
+	}
+	short packNum = dataLength / 8;
+	for (int i = 0; i < packNum; i++) {
+		if ((*(unsigned int*) (recvData + i * 8))
+				== (*(unsigned int*) SYNCHRO_HEAD)) {
+			*offset = i * 8;
+			return true;
+		}
+	}
+
+	packNum = dataLength - 4;
+	for (int i = 0; i <= packNum; i++) {
+		if ((*(unsigned int*) (recvData + i))
+				== (*(unsigned int*) SYNCHRO_HEAD)) {
+			*offset = i;
+			return true;
+		}else{
+			if(i == packNum){
+				*offset = dataLength;
+			}
+		}
+	}
+	return false;
+}
+
+bool
+RxTxComp_servant::checkTargetLD(
+		int targetLD)
+{
+	if (targetLD == data_mhal_axi_in_pport_local_LD){
+		return true;
+	}
+	return false;
+}
+
+bool
+RxTxComp_servant::checkCRC(
+		unsigned char *data,
+		int length,
+		unsigned short crc)
+{
+	unsigned short crcNum = get_crc16(data, length, 0);
+	if (crcNum == crc) {
+		return true;
+	}
+	return false;
+}
+
+void
+RxTxComp_servant::memcpySequence(
+		JTRS::OctetSequence &sequence,
+		const unsigned char *data,
+		int length)
+{
+	if (0 != length && NULL != data) {
+		JTRS::OctetSequence dataSeq;
+		dataSeq.release();
+		dataSeq.length(length);
+		memcpy(dataSeq.get_buffer(), data, length);
+
+		sequence.release();
+		sequence.length(length);
+		memcpy(sequence.get_buffer(), dataSeq.get_buffer(), length);
+	}
+}
+
+/**
+ * @brief	This function used to set Mhal port logical address.
+ * 			The logical address is read from component SPD file.
  */
 void 
-MsgTrans_Ctroller_servant::setMhalPortLD()
+RxTxComp_servant::setMhalPortLD()
 {
 	FileSystem_impl * fs_i = new FileSystem_impl(m_fsroot.c_str());
 	if(!fs_i->exists(m_spdRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::setMhalPortLD],
+		DEBUG(0, [RxTxComp_servant::setMhalPortLD],
 			"SPD file is not existing: " << m_spdRelPath);
 	}
 
@@ -127,7 +431,7 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 	std::string prfRelPath =
 		m_spdRelPath.substr(0, pos + 1) + spdParser.getPRFFile();
 	if(!fs_i->exists(prfRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::setMhalPortLD],
+		DEBUG(0, [RxTxComp_servant::setMhalPortLD],
 			"prf file is not existing: " << prfRelPath);
 	}
 
@@ -138,7 +442,22 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 		std::string propName = allProps[i]->getName();
 		std::vector <std::string> value = allProps[i]->getValue();
 		
-        //There is no mhal ports.
+        if(0 == strcmp(allProps[i]->getName(),"data_mhal_axi_out_target_LD")) {
+            if(checkHexFormat(value[0].c_str())) {
+                hexConvertToDec(value[0].c_str(),data_mhal_axi_out_uport_target_LD);
+            } else {
+                data_mhal_axi_out_uport_target_LD = openscaSupport::strings_to_unsigned_short(allProps[i]->getValue());
+            }
+            continue;
+        }
+        if(0 == strcmp(allProps[i]->getName(),"data_mhal_axi_in_local_LD")) {
+            if(checkHexFormat(value[0].c_str())) {
+                hexConvertToDec(value[0].c_str(),data_mhal_axi_in_pport_local_LD);
+            } else {
+                data_mhal_axi_in_pport_local_LD = openscaSupport::strings_to_unsigned_short(allProps[i]->getValue());
+            }
+            continue;
+        }
 	}
 
 	delete fs_i;
@@ -147,7 +466,7 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 /**
  * @brief 	The getPort operation provides a mechanism to obtain a specific 
  *         	consumer or producer port, returns the object reference to the 
- *         	named port as stated in the component's SCD.
+ *         	named port as stated in the component SCD.
  *
  * @param[in] 	portName-name references to the port user want to get.
  *
@@ -157,27 +476,30 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
  *              if the port name is invalid.
  */
 CORBA::Object_ptr 
-MsgTrans_Ctroller_servant::getPort(
+RxTxComp_servant::getPort(
 	const char * portName) 
 throw (
 	CORBA::SystemException, 
 	CF::PortSupplier::UnknownPort)
 {
-    DEBUG(6, [MsgTrans_Ctroller_servant::getPort], "In getPort.")
+    DEBUG(6, [RxTxComp_servant::getPort], "In getPort.")
 		
 	CORBA::Object_var _port;
 	
 	std::string portFullName = "OpenSCA_Domain/" + m_appName + "/" + portName;
-	DEBUG(5, [MsgTrans_Ctroller_servant::getPort], " portName:" << portName)
-	if ((0 == strcmp(portName, CRCCOMP_UPORT)) ||
-		(0 == strcmp(portName, CRCCOMP_PPORT))) {
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		_port = comps[0]->getPort(portName);
-		return _port._retn();
-	}
 
-    _port = control_out_uport->getPort( portFullName.c_str());
+    _port = data_out_uport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    _port = data_mhal_axi_out_uport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    if( 0 == strcmp(portName, "control_in") )
+        return _this();
+    _port = data_in_pport->getPort( portFullName.c_str() );
+    if (!CORBA::is_nil(_port))
+       return _port._retn();
+    _port = data_mhal_axi_in_pport->getPort( portFullName.c_str() );
     if (!CORBA::is_nil(_port))
        return _port._retn();
 	
@@ -194,34 +516,23 @@ throw (
  *             	exception if an error occurs while starting the resource.
  */
 void 
-MsgTrans_Ctroller_servant::start()
+RxTxComp_servant::start()
 throw (
 	CORBA::SystemException, 
 	CF::Resource::StartError)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::start], "In start.")
+	DEBUG(6, [RxTxComp_servant::start], "In start.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-#ifdef __SDS_OS_LINUX__
 	if(!m_isStarted){
-		m_mhalDev->start();
+		m_recvData.length(0);
 
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		DEBUG(7, [MsgTrans_Ctroller_servant::start],
-			" comps.size(): " << comps.size());
-
-		for(int i = 0; i < comps.size(); i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::start],
-					" get component failed. ");
-				break;
-			}
-			comps[i]->start();
-		}
+		data_in_pport->connectSlot(
+			boost::bind(&RxTxComp_servant::sendDataToMHAL, this));
+		data_mhal_axi_in_pport->connectSlot(
+			boost::bind(&RxTxComp_servant::receiveDataFromMHAl, this));
 
 		m_isStarted = true;
 	}
-#endif
 /**************************OPENSCA-USERREGION-END*********************************/
 }
 
@@ -236,41 +547,22 @@ throw (
  *             	if an error occurs while stopping the device.
  */
 void 
-MsgTrans_Ctroller_servant::stop() 
+RxTxComp_servant::stop() 
 throw (
 	CORBA::SystemException, 
 	CF::Resource::StopError) 
 {  
-	DEBUG(6, [MsgTrans_Ctroller_servant::stop], "In stop.")
+	DEBUG(6, [RxTxComp_servant::stop], "In stop.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 #ifdef __SDS_OS_LINUX__
 	if(m_isStarted){
-		try{
-			m_mhalDev->stop();
-		}catch(...){
-			DEBUG(0, [MsgTrans_Ctroller_servant::stop], " stop error.")
-		}
 
-		std::vector <CF::Resource_ptr> comps;
-		comps = control_out_uport->getProvidesPorts();
-		DEBUG(7, MsgTrans_Ctroller_servant::stop,
-			" comps.size(): " << comps.size());
-
-		for(int i = 0; i < comps.size(); i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::stop],
-					" get component failed. ");
-				break;
-			}
-
-			DEBUG(7, [MsgTrans_Ctroller_servant::stop], " call stop. ");
-			comps[i]->stop();
-		}
+		data_in_pport->disconnectSlot();
+		data_mhal_axi_in_pport->disconnectSlot();
 
 		m_isStarted = false;
 	}
 #endif
-	DEBUG(7, [MsgTrans_Ctroller_servant::stop], " leave.")
 /**************************OPENSCA-USERREGION-END*********************************/
 }
 
@@ -306,20 +598,44 @@ throw (
  *			  	within the device being released.
  */
 void 
-MsgTrans_Ctroller_servant::releaseObject() 
+RxTxComp_servant::releaseObject() 
 throw (
 	CORBA::SystemException, 
 	CF::LifeCycle::ReleaseError)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::releaseObject], " In releaseObject.")
-	
-	if (m_isStarted) {
-		stop();
+	DEBUG(6, [RxTxComp_servant::releaseObject], " In releaseObject.")
+
+#ifdef __SDS_OS_LINUX__
+	if(m_isStarted){
+
+		data_in_pport->disconnectSlot();
+		data_mhal_axi_in_pport->disconnectSlot();
+
+		errorRate.checkErrorNum =0;
+		errorRate.checkSum = 0;
+
+		m_isStarted = false;
+	}
+#endif
+
+	if (data_out_uport) {
+		delete data_out_uport;
+		data_out_uport = NULL;
 	}
 
-	if (control_out_uport) {
-		delete control_out_uport;
-		control_out_uport = NULL;
+	if (data_mhal_axi_out_uport) {
+		delete data_mhal_axi_out_uport;
+		data_mhal_axi_out_uport = NULL;
+	}
+
+	if (data_in_pport) {
+		delete data_in_pport;
+		data_in_pport = NULL;
+	}
+
+	if (data_mhal_axi_in_pport) {
+		delete data_mhal_axi_in_pport;
+		data_mhal_axi_in_pport = NULL;
 	}
 	
 	//unbind name from domain
@@ -333,11 +649,11 @@ throw (
 	try {
 		nc = CosNaming::NamingContext::_narrow(obj);
 	} catch (CosNaming::NamingContext::InvalidName& ex) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [RxTxComp_servant::releaseObject],
 			" occure InvalidName Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [RxTxComp_servant::releaseObject],
 			" occure Unknown Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -345,11 +661,11 @@ throw (
 	try {
 		m_orbWrap->destory_context( nc );
 	} catch(CosNaming::NamingContext::NotEmpty) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [RxTxComp_servant::releaseObject],
 			" NamingContext to be destroy is not empty.")
 		throw CF::LifeCycle::ReleaseError();
 	} catch(...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [RxTxComp_servant::releaseObject],
 			" Unknown  Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -358,7 +674,7 @@ throw (
 	try {
 		m_orbWrap->unbind_string(contextName.c_str());
 	} catch(...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::releaseObject],
+		DEBUG(0, [RxTxComp_servant::releaseObject],
 			" unbing_string with Unknown  Exception.")
 		throw CF::LifeCycle::ReleaseError();
 	}
@@ -383,66 +699,34 @@ throw (
  *             	exception when an initialization error occurs.
  */
 void 
-MsgTrans_Ctroller_servant::initialize()
+RxTxComp_servant::initialize()
 throw (
 	CF::LifeCycle::InitializeError, 
 	CORBA::SystemException)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::initialize], " In initialize.")
+	DEBUG(6, [RxTxComp_servant::initialize], " In initialize.")
 	
-    control_out_uport = new StandardInterfaces_i::Resource_u(
-    	("OpenSCA_Domain/" + m_appName + "/MsgTrans_Ctroller/control_out").c_str());
+    data_out_uport = new StandardInterfaces_i::RealOctet_u(("OpenSCA_Domain/" + m_appName + "/RxTxComp/data_out").c_str());
+    data_mhal_axi_out_uport = new StandardInterfaces_i::MHAL_WF_u(("OpenSCA_Domain/" + m_appName + "/RxTxComp/data_mhal_axi_out").c_str());
+    data_in_pport = new StandardInterfaces_i::RealOctet_p(("OpenSCA_Domain/" + m_appName + "/RxTxComp/data_in").c_str());
+    data_mhal_axi_in_pport = new StandardInterfaces_i::MHAL_WF_p(("OpenSCA_Domain/" + m_appName + "/RxTxComp/data_mhal_axi_in").c_str());
 	m_initConfig = false;
 	getConfigPropsFromPRF();
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	/// getting the SPM_Zynq7045_PS device through the naming service
-	/// and then getting the Mhal subdevice.
-	std::string contextName = 
-		"OpenSCA_Domain/Single_Node/Device_Manager/Zynq7035_PS";
-	CORBA::Object_ptr obj = 
-		m_orbWrap->get_object_from_string(contextName.c_str());
-	if (CORBA::is_nil(obj)) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize], " obtain obj fail.")
-		return;
-	}
+    m_isStarted = false;
 
-	CF::ExecutableDevice_var dev;
-	try {
-		dev = CF::ExecutableDevice::_narrow(obj);
-	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			"\"CF::ExecutableDevice::_narrow\" failed with Unknown Exception.")
-	}
+    errorRate.checkSum = 0;
+    errorRate.checkErrorNum = 0;
 
-	try {
-		CF::DeviceSequence_var deviceSeq = dev->compositeDevice()->devices();
-		for (CORBA::ULong i = 0; i < deviceSeq->length(); ++i) {
-			if (0 == strcmp("MHAL_Device", deviceSeq[i]->label())) {
-				m_mhalDev = CF::Device::_duplicate(deviceSeq[i]);
-				break;
-			}
-		}
-	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			" get MHAL device failed.")
-	}
-
-	if (CORBA::is_nil(m_mhalDev)) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::initialize],
-			" get child device failed.")
-		return;
-	}
-
-	m_isStarted = false;
 /**************************OPENSCA-USERREGION-END*********************************/	
 }
 
 void 
-MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
+RxTxComp_servant::getConfigPropsFromPRF()
 {
 	FileSystem_impl * fs_i = new FileSystem_impl( m_fsroot.c_str() );
 	if(!fs_i->exists(m_spdRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::getConfigPropsFromPRF], 
+		DEBUG(0, [RxTxComp_servant::getConfigPropsFromPRF], 
 			"SPD file is not existing: " << m_spdRelPath);
 	}
 
@@ -452,7 +736,7 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
 	std::string prfRelPath = m_spdRelPath.substr(0, pos + 1) +
 								spdParser.getPRFFile();
 	if(!fs_i->exists(prfRelPath.c_str())) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::getConfigPropsFromPRF], 
+		DEBUG(0, [RxTxComp_servant::getConfigPropsFromPRF], 
 			"prf file is not existing: " << prfRelPath);
 	}
 
@@ -474,10 +758,10 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  * 			shall return only those id/value pairs specified in the
  * 			configProperties parameter if the parameter is not zero size. Valid 
  * 			properties for the query operation shall be all configure properties 
- * 			(simple properties whose kind element's kindtype attribute is 
+ * 			(simple properties whose kind element kindtype attribute is 
  * 			"configure" whose mode attribute is "readwrite" or "readonly" and any
  * 			allocation properties with an action value of "external" as referenced 
- * 			in the component's SPD.
+ * 			in the component SPD.
  *
  * @param[inout]	props	properties need to be queried.
  *
@@ -486,78 +770,25 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  *            component.
  */
 void 
-MsgTrans_Ctroller_servant::query(
+RxTxComp_servant::query (
 	CF::Properties & configProperties)
 throw (
 	CORBA::SystemException, 
 	CF::UnknownProperties)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::query], "In query.")
+	DEBUG(6, [RxTxComp_servant::query], "In query.")
 	pthread_mutex_lock(&m_attrMtx);
+	PropertySet_impl::query(configProperties);
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
-	CF::Properties totalProperties;
-	totalProperties.length(0);
 
-	std::vector <CF::Resource_ptr> comps;
-	comps = control_out_uport->getProvidesPorts();
-	CORBA::Short compLen = comps.size();
-	DEBUG(6, [MsgTrans_Ctroller_servant::query], " compLen: " << compLen);
-
-	if (0 == configProperties.length()){
-		for(CORBA::Short i = 0; i < compLen; i++) {
-			if(CORBA::is_nil(comps[i])) {
-				DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ");
-				pthread_mutex_unlock(&m_attrMtx);
-				break;
-			}
-			CF::Properties properties;
-			comps[i]->query(properties);
-
-			CORBA::Short len = properties.length();
-			DEBUG(6, [MsgTrans_Ctroller_servant::query], " len: " << len);
-			CORBA::Short totalLen = totalProperties.length();
-			DEBUG(6, [MsgTrans_Ctroller_servant::query], " totalLen: " << totalLen);
-			totalProperties.length(totalLen + len);
-			for(CORBA::Short i = 0; i < len; ++i) {
-				totalProperties[totalLen + i] = properties[i];
-			}
+	for(int i=0; i<configProperties.length(); ++i){
+		if(0 == strcmp(configProperties[i].id, BLOCK_ERROR_RATE)
+				&& 0 != errorRate.checkSum){
+			float errorRateValue = errorRate.checkErrorNum*1.0/errorRate.checkSum;
+			errorRateValue = processDouble(errorRateValue, 5);
+			configProperties[i].value <<= errorRateValue;
 		}
-
-		PropertySet_impl::query(configProperties);
-		CORBA::UShort len = configProperties.length();
-		CORBA::UShort oldLen = totalProperties.length();
-		totalProperties.length(oldLen + len);
-		for(CORBA::UShort i = 0; i < len; ++i) {
-			totalProperties[oldLen + i] = configProperties[i];
-		}
-
-		configProperties.length(0);
-		configProperties = totalProperties;
-	} 
-
-	if(1 == configProperties.length()){
-		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
-			0 == strcmp(configProperties[0].id, START_STATUS) ||
-			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
-
-			PropertySet_impl::query(configProperties);
-
-		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
-			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
-			0 == strcmp(configProperties[0].id, TARGET_LD)) {
-
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
-					comps[i]->query(configProperties);
-				}
-			}
-		}
-	}	
+	}
 /**************************OPENSCA-USERREGION-END*********************************/	
 	pthread_mutex_unlock(&m_attrMtx);
 }
@@ -568,7 +799,7 @@ throw (
  *			The configure operation shall assign values to the properties as 
  *			indicated in the input configProperties parameter. Valid properties 
  *			for the configure operation shall at a minimum be the configure 
- *			readwrite and writeonly properties referenced in the component's SPD.
+ *			readwrite and writeonly properties referenced in the component SPD.
  *
  * @param[in]	configProperties properties need to be configured.
  *
@@ -580,14 +811,14 @@ throw (
  *				properties were successfully set.
  */
 void 
-MsgTrans_Ctroller_servant::configure(
+RxTxComp_servant::configure(
 	const CF::Properties & configProperties)
 throw (
 	CORBA::SystemException,
 	CF::PropertySet::InvalidConfiguration,
 	CF::PropertySet::PartialConfiguration)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::configure], "In configure.")
+	DEBUG(6, [RxTxComp_servant::configure], "In configure.")
 
 	pthread_mutex_lock(&m_attrMtx);
 	
@@ -605,17 +836,17 @@ throw (
 	try {
 		PropertySet_impl::configure(props);
 	} catch (CF::PropertySet::PartialConfiguration & e) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [RxTxComp_servant::configure], 
 			"partial configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
 		throw e;
 	} catch (CF::PropertySet::InvalidConfiguration & e) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [RxTxComp_servant::configure], 
 			"invalid configuration exception.")
 		pthread_mutex_unlock(&m_attrMtx);
 		throw e;
 	} catch (...) {
-		DEBUG(0, [MsgTrans_Ctroller_servant::configure], 
+		DEBUG(0, [RxTxComp_servant::configure], 
 			"occur unkown exception when config." )
 		pthread_mutex_unlock(&m_attrMtx);
 		throw CF::PropertySet::InvalidConfiguration();
@@ -644,14 +875,14 @@ throw (
  * 					associated with the input testId given.
  *					The runTest operation shall raise the CF UnknownProperties 
  *					exception when the input parameter testValues contains any 
- *					CF DataTypes that are not known by the component's test
+ *					CF DataTypes that are not known by the component test
  *					implementation or any values that are out of range for the 
  *					requested test. The exception parameter invalidProperties 
  *					shall contain the invalid testValues properties id(s) that are
  *					not known by the component or the value(s) are out of range.
  */
 void 
-MsgTrans_Ctroller_servant::runTest(
+RxTxComp_servant::runTest(
 	CORBA::ULong TestID, 
 	CF::Properties & testValues)
 throw (
@@ -659,7 +890,7 @@ throw (
 	CF::TestableObject::UnknownTest,
 	CORBA::SystemException)
 {
-	DEBUG(6, [MsgTrans_Ctroller_servant::runTest], "In runTest.")
+	DEBUG(6, [RxTxComp_servant::runTest], "In runTest.")
 /**************************OPENSCA-USERREGION-BEGIN*******************************/
 
 
