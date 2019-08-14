@@ -300,5 +300,13 @@ private:
  	 * 			The logical address is read from component SPD file.
  	 */
 	void setMhalPortLD();
+
+	void 
+	configureAudioCompressionRatioPro(
+		const CF::Properties & props);
+
+	void 
+	configureConnectionAndStartStatusPro(
+		const CF::Properties & props);
 };
 #endif /// !defined(AudioTrans_Ctroller_servant_INCLUDED_)

@@ -532,44 +532,120 @@ throw (
 		configProperties = totalProperties;
 	} 
 
-	if(1 == configProperties.length()){
-		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
-			0 == strcmp(configProperties[0].id, START_STATUS) ||
-			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
+	if(1 != configProperties.length()){
+		pthread_mutex_unlock(&m_attrMtx);
+		return;
+	}
+	if(0 == strcmp(configProperties[0].id, CONNECTION) || 
+		0 == strcmp(configProperties[0].id, START_STATUS) ||
+		0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
 
-			PropertySet_impl::query(configProperties);
+		PropertySet_impl::query(configProperties);
 
-		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
-			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
-			0 == strcmp(configProperties[0].id, TARGET_LD)) {
+	} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
+		0 == strcmp(configProperties[0].id, LOCAL_LD) ||
+		0 == strcmp(configProperties[0].id, TARGET_LD)) {
 
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [AudioTrans_Ctroller_servant::start], 
-						" get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
-					comps[i]->query(configProperties);
-				}
+		for(int i = 0; i < compLen; i++) {
+			if(CORBA::is_nil(comps[i])) {
+				DEBUG(0, [AudioTrans_Ctroller_servant::start], 
+					" get component failed. ")
+				pthread_mutex_unlock(&m_attrMtx);
+				break;
 			}
-		} else if (0 == strcmp(configProperties[0].id, AUDIO_COMPRESSION_RATIO)){
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [AudioTrans_Ctroller_servant::start], 
-						" get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), AUDIO_CODEC_COMP_ID)){
-					comps[i]->query(configProperties);
-				}
+			if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
+				comps[i]->query(configProperties);
+			}
+		}
+	} else if (0 == strcmp(configProperties[0].id, AUDIO_COMPRESSION_RATIO)){
+		for(int i = 0; i < compLen; i++) {
+			if(CORBA::is_nil(comps[i])) {
+				DEBUG(0, [AudioTrans_Ctroller_servant::start], 
+					" get component failed. ")
+				pthread_mutex_unlock(&m_attrMtx);
+				break;
+			}
+			if(0 == strcmp(comps[i]->identifier(), AUDIO_CODEC_COMP_ID)){
+				comps[i]->query(configProperties);
 			}
 		}
 	}	
 /**************************OPENSCA-USERREGION-END*********************************/	
 	pthread_mutex_unlock(&m_attrMtx);
+}
+
+void 
+AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro(
+	const CF::Properties & props)
+{
+	std::vector <CF::Resource_ptr> comps;
+	comps = control_out_uport->getProvidesPorts();
+
+	DEBUG(7, [AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro],
+		" comps.size(): " << comps.size());
+
+	for(int i = 0; i < comps.size(); i++){
+		if(CORBA::is_nil(comps[i])){
+			DEBUG(0, [AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro],
+				" get component failed. ");
+			pthread_mutex_unlock(&m_attrMtx);
+			break;
+		}
+
+		if( 0 == strcmp(comps[i]->identifier(), AUDIO_CODEC_COMP_ID)){
+			CF::Properties crcProp;
+			crcProp.length(1);
+			crcProp[0] = props[0];
+			
+			try{
+				comps[i]->configure(crcProp);				
+			} catch (CF::PropertySet::PartialConfiguration &e) {
+				DEBUG(0, [AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro], 
+					"partial configuration exception.")
+				pthread_mutex_unlock(&m_attrMtx);
+				throw e;
+			} catch (CF::PropertySet::InvalidConfiguration &e) {
+				pthread_mutex_unlock(&m_attrMtx);				
+				DEBUG(0, [AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro], 
+					"invalid configuration exception.")
+				throw e;
+			} catch (...) {
+				DEBUG(0, [AudioTrans_Ctroller_servant::configureAudioCompressionRatioPro], 
+					"occur unkown exception when config." )
+				pthread_mutex_unlock(&m_attrMtx);
+				throw CF::PropertySet::InvalidConfiguration();
+			}
+			pthread_mutex_unlock(&m_attrMtx);
+			return;
+		}
+	}
+}
+
+void 
+AudioTrans_Ctroller_servant::configureConnectionAndStartStatusPro(
+	const CF::Properties & props)
+{
+	CORBA::UShort value;
+	props[0].value >>= value;
+
+	std::vector <CF::Resource_ptr> comps;
+	comps = control_out_uport->getProvidesPorts();
+
+	DEBUG(7, [AudioTrans_Ctroller_servant::configureConnectionAndStartStatusPro],
+		" comps.size(): " << comps.size());
+
+	for(int i = 0; i < comps.size(); i++){
+		if(CORBA::is_nil(comps[i])){
+			DEBUG(0, [AudioTrans_Ctroller_servant::configureConnectionAndStartStatusPro],
+				" get component failed. ");
+			pthread_mutex_unlock(&m_attrMtx);
+			break;
+		}
+
+		PropertySet_impl::configure(props);
+		pthread_mutex_unlock(&m_attrMtx);
+		return;
+	}	
 }
 
 /**
@@ -605,72 +681,14 @@ throw (
 	
 	if(1 == props.length()){
 		if( 0 == strcmp( props[0].id, AUDIO_COMPRESSION_RATIO)) {
-			std::vector <CF::Resource_ptr> comps;
-			comps = control_out_uport->getProvidesPorts();
-
-			DEBUG(7, [AudioTrans_Ctroller_servant::configure],
-				" comps.size(): " << comps.size());
-
-			for(int i = 0; i < comps.size(); i++){
-				if(CORBA::is_nil(comps[i])){
-					DEBUG(0, [AudioTrans_Ctroller_servant::configure],
-						" get component failed. ");
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-
-				if( 0 == strcmp(comps[i]->identifier(), AUDIO_CODEC_COMP_ID)){
-					CF::Properties crcProp;
-					crcProp.length(1);
-					crcProp[0] = props[0];
-					
-					try{
-						comps[i]->configure(crcProp);				
-					} catch (CF::PropertySet::PartialConfiguration &e) {
-						DEBUG(0, [AudioTrans_Ctroller_servant::configure], 
-							"partial configuration exception.")
-						pthread_mutex_unlock(&m_attrMtx);
-						throw e;
-					} catch (CF::PropertySet::InvalidConfiguration &e) {
-						pthread_mutex_unlock(&m_attrMtx);				
-						DEBUG(0, [AudioTrans_Ctroller_servant::configure], 
-							"invalid configuration exception.")
-						throw e;
-					} catch (...) {
-						DEBUG(0, [AudioTrans_Ctroller_servant::configure], 
-							"occur unkown exception when config." )
-						pthread_mutex_unlock(&m_attrMtx);
-						throw CF::PropertySet::InvalidConfiguration();
-					}
-					pthread_mutex_unlock(&m_attrMtx);
-					return;
-				}
-			}
+			configureAudioCompressionRatioPro(props);
+			return;
 		}
 
 		if( 0 == strcmp( props[0].id, CONNECTION) ||
 			0 == strcmp( props[0].id, START_STATUS)) {
-			CORBA::UShort value;
-			props[0].value >>= value;
-
-			std::vector <CF::Resource_ptr> comps;
-			comps = control_out_uport->getProvidesPorts();
-
-			DEBUG(7, [AudioTrans_Ctroller_servant::configure],
-				" comps.size(): " << comps.size());
-
-			for(int i = 0; i < comps.size(); i++){
-				if(CORBA::is_nil(comps[i])){
-					DEBUG(0, [AudioTrans_Ctroller_servant::configure],
-						" get component failed. ");
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-
-				PropertySet_impl::configure(props);
-				pthread_mutex_unlock(&m_attrMtx);
-				return;
-			}
+			configureConnectionAndStartStatusPro(props);
+			return;
 		}
 	}
 	

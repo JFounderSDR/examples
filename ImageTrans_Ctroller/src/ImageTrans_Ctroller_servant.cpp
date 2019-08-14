@@ -529,30 +529,33 @@ throw (
 		configProperties = totalProperties;
 	} 
 
-	if(1 == configProperties.length()){
-		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
-			0 == strcmp(configProperties[0].id, START_STATUS) ||
-			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
+	if(1 != configProperties.length()){
+		pthread_mutex_unlock(&m_attrMtx);
+		return;
+	}
 
-			PropertySet_impl::query(configProperties);
+	if(0 == strcmp(configProperties[0].id, CONNECTION) || 
+		0 == strcmp(configProperties[0].id, START_STATUS) ||
+		0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
 
-		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
-			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
-			0 == strcmp(configProperties[0].id, TARGET_LD)) {
+		PropertySet_impl::query(configProperties);
 
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [ImageTrans_Ctroller_servant::start], 
-						" get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), RXTXCOMP_ID)){
-					comps[i]->query(configProperties);
-				}
+	} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
+		0 == strcmp(configProperties[0].id, LOCAL_LD) ||
+		0 == strcmp(configProperties[0].id, TARGET_LD)) {
+
+		for(int i = 0; i < compLen; i++) {
+			if(CORBA::is_nil(comps[i])) {
+				DEBUG(0, [ImageTrans_Ctroller_servant::start], 
+					" get component failed. ")
+				pthread_mutex_unlock(&m_attrMtx);
+				break;
+			}
+			if(0 == strcmp(comps[i]->identifier(), RXTXCOMP_ID)){
+				comps[i]->query(configProperties);
 			}
 		}
-	}	
+	}
 /**************************OPENSCA-USERREGION-END*********************************/	
 	pthread_mutex_unlock(&m_attrMtx);
 }

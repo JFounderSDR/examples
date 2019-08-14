@@ -34,8 +34,8 @@ MsgTrans_Ctroller_servant::MsgTrans_Ctroller_servant()
 /**
  * @brief	MsgTrans_Ctroller_servant Constructor.
  * 
- * @param[in] _id		component's name.
- * @param[in] _sftwf1 	component's SPD file name.
+ * @param[in] _id		component name.
+ * @param[in] _sftwf1 	component SPD file name.
  * @param[in] _fsroot	file system root path.
  */
 #ifdef __SDS_OS_VXWORKS__
@@ -109,8 +109,8 @@ MsgTrans_Ctroller_servant::~MsgTrans_Ctroller_servant()
 }
 
 /**
- * @brief	This function used to set Mhal port's logical address.
- * 			The logical address is read from component's SPD file.
+ * @brief	This function used to set Mhal port logical address.
+ * 			The logical address is read from component SPD file.
  */
 void 
 MsgTrans_Ctroller_servant::setMhalPortLD()
@@ -147,7 +147,7 @@ MsgTrans_Ctroller_servant::setMhalPortLD()
 /**
  * @brief 	The getPort operation provides a mechanism to obtain a specific 
  *         	consumer or producer port, returns the object reference to the 
- *         	named port as stated in the component's SCD.
+ *         	named port as stated in the component SCD.
  *
  * @param[in] 	portName-name references to the port user want to get.
  *
@@ -474,10 +474,10 @@ MsgTrans_Ctroller_servant::getConfigPropsFromPRF()
  * 			shall return only those id/value pairs specified in the
  * 			configProperties parameter if the parameter is not zero size. Valid 
  * 			properties for the query operation shall be all configure properties 
- * 			(simple properties whose kind element's kindtype attribute is 
+ * 			(simple properties whose kind element kindtype attribute is 
  * 			"configure" whose mode attribute is "readwrite" or "readonly" and any
  * 			allocation properties with an action value of "external" as referenced 
- * 			in the component's SPD.
+ * 			in the component SPD.
  *
  * @param[inout]	props	properties need to be queried.
  *
@@ -535,26 +535,29 @@ throw (
 		configProperties = totalProperties;
 	} 
 
-	if(1 == configProperties.length()){
-		if(0 == strcmp(configProperties[0].id, CONNECTION) || 
-			0 == strcmp(configProperties[0].id, START_STATUS) ||
-			0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
+	if(1 != configProperties.length()){
+		pthread_mutex_unlock(&m_attrMtx);
+		return;
+	}
 
-			PropertySet_impl::query(configProperties);
+	if(0 == strcmp(configProperties[0].id, CONNECTION) || 
+		0 == strcmp(configProperties[0].id, START_STATUS) ||
+		0 == strcmp(configProperties[0].id, BUSINESS_TYPE)){
 
-		} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
-			0 == strcmp(configProperties[0].id, LOCAL_LD) ||
-			0 == strcmp(configProperties[0].id, TARGET_LD)) {
+		PropertySet_impl::query(configProperties);
 
-			for(int i = 0; i < compLen; i++) {
-				if(CORBA::is_nil(comps[i])) {
-					DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ")
-					pthread_mutex_unlock(&m_attrMtx);
-					break;
-				}
-				if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
-					comps[i]->query(configProperties);
-				}
+	} else if (0 == strcmp(configProperties[0].id, BLOCK_ERROR_RATE) || 
+		0 == strcmp(configProperties[0].id, LOCAL_LD) ||
+		0 == strcmp(configProperties[0].id, TARGET_LD)) {
+
+		for(int i = 0; i < compLen; i++) {
+			if(CORBA::is_nil(comps[i])) {
+				DEBUG(0, [MsgTrans_Ctroller_servant::start], " get component failed. ")
+				pthread_mutex_unlock(&m_attrMtx);
+				break;
+			}
+			if(0 == strcmp(comps[i]->identifier(), CRCCOMP_ID)){
+				comps[i]->query(configProperties);
 			}
 		}
 	}	
@@ -568,7 +571,7 @@ throw (
  *			The configure operation shall assign values to the properties as 
  *			indicated in the input configProperties parameter. Valid properties 
  *			for the configure operation shall at a minimum be the configure 
- *			readwrite and writeonly properties referenced in the component's SPD.
+ *			readwrite and writeonly properties referenced in the component SPD.
  *
  * @param[in]	configProperties properties need to be configured.
  *
@@ -644,7 +647,7 @@ throw (
  * 					associated with the input testId given.
  *					The runTest operation shall raise the CF UnknownProperties 
  *					exception when the input parameter testValues contains any 
- *					CF DataTypes that are not known by the component's test
+ *					CF DataTypes that are not known by the component test
  *					implementation or any values that are out of range for the 
  *					requested test. The exception parameter invalidProperties 
  *					shall contain the invalid testValues properties id(s) that are
